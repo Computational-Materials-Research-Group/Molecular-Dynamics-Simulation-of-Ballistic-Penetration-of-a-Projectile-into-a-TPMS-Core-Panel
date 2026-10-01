@@ -1,0 +1,300 @@
+# ============================================================
+#  LAMMPS: Tungsten Ball Impact on a TPMS-Core Sandwich Panel
+#  Al face sheet / Al TPMS core / Al face sheet  (monolithic)
+#  Potential: CuAlW.txt (EAM/alloy)
+#  Adapted from tungsten_impact_ballmoves.lammps
+# ============================================================
+#
+#  z ^
+#    |   ( W ball )                      <- type 3
+#    |  ==========================       <- top face sheet     (type 1)
+#    |  ~~ TPMS core (gyroid etc.) ~~    <- lattice core       (type 2)
+#    |  ==========================       <- bottom face sheet  (type 1)
+#
+#  The panel is cut from ONE fcc lattice, so faces and core are
+#  perfectly bonded (like an additively manufactured part).
+#  Atoms of the core block are kept only where |f(x,y,z)| < t
+#  (sheet-network TPMS), where f is the chosen level-set function.
+# ============================================================
+
+units           metal
+dimension       3
+boundary        p p f
+atom_style      atomic
+
+# ----------------- Lattice -----------------
+variable        a_al      equal 4.05          # Al lattice constant (Ang)
+
+# ----------------- TPMS parameters -----------------
+# tpms: gyr = Gyroid | pri = Schwarz Primitive | dia = Schwarz Diamond
+variable        tpms      string gyr
+variable        n_cell_a  equal 10            # TPMS cell size in lattice units -> L = 40.5 Ang
+variable        n_cells_x equal 5             # TPMS cells along x and y (box = 5*40.5 = 202.5 Ang)
+variable        n_cells_z equal 1             # TPMS cells through core thickness
+variable        t_level   equal 0.6           # level-set half-thickness (controls relative density)
+#   approx. relative density of core for L = 40.5 Ang:
+#   gyroid    t=0.4 -> 0.26 | t=0.5 -> 0.32 | t=0.6 -> 0.38 | t=0.8 -> 0.52
+#   primitive t=0.5 -> 0.30 | t=0.8 -> 0.41
+#   diamond   t=0.3 -> 0.30 | t=0.5 -> 0.39
+#   (keep walls >= ~4-5 Ang, i.e. 2+ atomic layers, or they fall apart on minimization)
+
+# ----------------- Face sheets -----------------
+variable        n_face_a  equal 2             # face sheet thickness in lattice units -> 8.1 Ang
+
+# ----------------- Derived geometry (all in Ang) -----------------
+variable        L_cell    equal ${n_cell_a}*${a_al}
+variable        k_tpms    equal 2.0*PI/${L_cell}
+variable        sheet_lx  equal ${n_cells_x}*${L_cell}
+variable        sheet_ly  equal ${sheet_lx}
+variable        t_face    equal ${n_face_a}*${a_al}
+variable        core_h    equal ${n_cells_z}*${L_cell}
+variable        zc_lo     equal ${t_face}                    # core bottom
+variable        zc_hi     equal ${t_face}+${core_h}          # core top
+variable        z_top     equal ${zc_hi}+${t_face}           # panel top surface
+variable        zc_lo_in  equal ${zc_lo}+0.5                 # atomic planes AT the interface
+variable        zc_hi_in  equal ${zc_hi}-0.5                 #   stay with the face sheets
+
+# ----------------- Projectile -----------------
+variable        ball_r    equal 25.0
+variable        ball_gap  equal 15.0                         # initial gap above panel
+variable        ball_cx   equal ${sheet_lx}/2.0
+variable        ball_cy   equal ${sheet_ly}/2.0
+variable        ball_cz   equal ${z_top}+${ball_r}+${ball_gap}
+
+variable        v_impact  equal -15.0                        # Ang/ps (~1500 m/s)
+variable        T_init    equal 300.0
+variable        dt        equal 0.001
+
+variable        box_zlo   equal -100.0
+variable        box_zhi   equal ${ball_cz}+${ball_r}+15.0
+variable        clamp_w   equal 4.0                          # clamped edge border width
+
+# --------------- Box ---------------
+lattice         fcc ${a_al}
+region          simbox block 0 ${sheet_lx} 0 ${sheet_ly} ${box_zlo} ${box_zhi} units box
+create_box      3 simbox
+
+# --------------- Panel: fill full block, then carve the core ---------------
+region          panel_reg block 0 ${sheet_lx} 0 ${sheet_ly} 0 ${z_top} units box
+create_atoms    1 region panel_reg
+
+region          core_reg block INF INF INF INF ${zc_lo_in} ${zc_hi_in} units box
+group           core_block region core_reg
+set             group core_block type 2
+variable        n_core_full equal count(core_block)
+variable        n_core_full_i equal ${n_core_full}           # freeze value before carving
+
+# TPMS level-set functions (z measured from the core bottom so faces cut at a fixed phase)
+variable        X  atom ${k_tpms}*x
+variable        Y  atom ${k_tpms}*y
+variable        Z  atom ${k_tpms}*(z-${zc_lo})
+
+variable        f_gyr atom sin(v_X)*cos(v_Y)+sin(v_Y)*cos(v_Z)+sin(v_Z)*cos(v_X)
+variable        f_pri atom cos(v_X)+cos(v_Y)+cos(v_Z)
+variable        f_dia atom sin(v_X)*sin(v_Y)*sin(v_Z)+sin(v_X)*cos(v_Y)*cos(v_Z)+cos(v_X)*sin(v_Y)*cos(v_Z)+cos(v_X)*cos(v_Y)*sin(v_Z)
+
+variable        tpms_void atom abs(v_f_${tpms})>${t_level}
+group           void_all  variable tpms_void
+group           core_void intersect void_all core_block
+delete_atoms    group core_void compress yes
+
+group           void_all  delete
+group           core_void delete
+group           core_block delete
+
+# --------------- W Ball (Type 3) ---------------
+lattice         bcc 3.165
+region          ball_reg sphere ${ball_cx} ${ball_cy} ${ball_cz} ${ball_r} units box
+create_atoms    3 region ball_reg
+
+mass            1 26.982
+mass            2 26.982
+mass            3 183.84
+
+pair_style      eam/alloy
+pair_coeff      * * CuAlW.txt Al Al W                        # types 1,2 -> Al ; 3 -> W
+
+neighbor        3.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+# --------------- Groups ---------------
+group           al_panel    type 1 2
+group           face_sheets type 1
+group           tpms_core   type 2
+group           w_ball      type 3
+
+region          top_face_reg block INF INF INF INF ${zc_hi} INF units box
+region          bot_face_reg block INF INF INF INF INF ${zc_lo} units box
+group           top_tmp     region top_face_reg
+group           bot_tmp     region bot_face_reg
+group           face_top    intersect face_sheets top_tmp
+group           face_bot    intersect face_sheets bot_tmp
+group           top_tmp     delete
+group           bot_tmp     delete
+
+variable        in_xhi equal ${sheet_lx}-${clamp_w}
+variable        in_yhi equal ${sheet_ly}-${clamp_w}
+region          inner_reg   block ${clamp_w} ${in_xhi} ${clamp_w} ${in_yhi} INF INF units box
+group           in_tmp      region inner_reg
+group           sheet_inner intersect al_panel in_tmp
+group           sheet_edge  subtract al_panel sheet_inner
+group           in_tmp      delete
+
+# --------------- Panel statistics ---------------
+variable        n_core    equal count(tpms_core)
+variable        rel_dens  equal v_n_core/${n_core_full_i}
+print "================================================"
+print " TPMS SANDWICH PANEL"
+print "   TPMS type        : ${tpms}"
+print "   cell size L      : ${L_cell} Ang  (k = ${k_tpms})"
+print "   level t          : ${t_level}"
+print "   face thickness   : ${t_face} Ang (x2)"
+print "   core thickness   : ${core_h} Ang"
+print "   panel thickness  : ${z_top} Ang"
+print "   face atoms       : $(count(face_sheets))"
+print "   core atoms       : $(v_n_core)"
+print "   core rel. density: $(v_rel_dens:%.3f)"
+print "   W ball atoms     : $(count(w_ball))"
+print "================================================"
+
+write_data      panel_initial.data                           # inspect geometry in OVITO
+
+# --------------- Stress Computes ---------------
+compute         stress_atom all stress/atom NULL
+
+variable        sxx atom c_stress_atom[1]
+variable        syy atom c_stress_atom[2]
+variable        szz atom c_stress_atom[3]
+variable        sxy atom c_stress_atom[4]
+variable        sxz atom c_stress_atom[5]
+variable        syz atom c_stress_atom[6]
+
+variable        von_mises atom sqrt(0.5*((v_sxx-v_syy)^2+(v_syy-v_szz)^2+(v_szz-v_sxx)^2+6*(v_sxy^2+v_sxz^2+v_syz^2)))
+variable        hydro_press atom -(v_sxx+v_syy+v_szz)/3.0
+
+compute         ke_atom   all ke/atom
+compute         pe_atom   all pe/atom
+compute         avg_vm    all reduce ave v_von_mises
+compute         max_vm    all reduce max v_von_mises
+compute         avg_press all reduce ave v_hydro_press
+compute         max_press all reduce max v_hydro_press
+compute         min_press all reduce min v_hydro_press
+
+# per-component von Mises (how load is shared across the sandwich)
+compute         vm_top    face_top  reduce ave v_von_mises
+compute         vm_core   tpms_core reduce ave v_von_mises
+compute         vm_bot    face_bot  reduce ave v_von_mises
+
+# projectile diagnostics
+compute         ke_ball   w_ball ke
+variable        ball_z    equal xcm(w_ball,z)
+variable        ball_vz   equal vcm(w_ball,z)
+variable        ball_vms  equal -100.0*v_ball_vz              # speed in m/s (downward +)
+# translational (centre-of-mass) KE of the ball in eV; 1 amu*Ang^2/ps^2 = 1.036427e-4 eV
+# (excludes the ball's own thermal/vibrational energy, so it is the clean ballistic metric)
+variable        ke_cm     equal 0.5*mass(w_ball)*(vcm(w_ball,x)^2+vcm(w_ball,y)^2+vcm(w_ball,z)^2)*1.036427e-4
+
+thermo          100
+thermo_style    custom step atoms temp pe ke etotal press &
+                c_avg_vm c_max_vm c_avg_press v_ball_z v_ball_vms
+thermo_modify   lost ignore flush yes                         # spalled debris may leave the box
+
+dump            1 all custom 100 impact_stress.lammpstrj &
+                id type x y z vx vy vz &
+                v_von_mises v_hydro_press &
+                c_stress_atom[1] c_stress_atom[2] c_stress_atom[3] &
+                c_stress_atom[4] c_stress_atom[5] c_stress_atom[6]
+dump_modify     1 sort id
+
+dump            2 all custom 100 impact_vonmises.lammpstrj &
+                id type x y z v_von_mises v_hydro_press
+dump_modify     2 sort id
+
+fix             stress_out all ave/time 100 1 100 &
+                c_avg_vm c_max_vm c_avg_press c_min_press c_max_press &
+                c_vm_top c_vm_core c_vm_bot &
+                file stress_history.dat
+
+timestep        ${dt}
+
+# ============================================================
+#  STEP 0: Equilibrate panel ONLY (ball frozen)
+# ============================================================
+fix             frz_edge sheet_edge setforce 0.0 0.0 0.0
+fix             frz_ball w_ball     setforce 0.0 0.0 0.0
+velocity        w_ball set 0.0 0.0 0.0
+
+minimize        1.0e-5 1.0e-7 10000 100000
+
+velocity        sheet_inner create ${T_init} 12345 mom yes rot yes dist gaussian
+fix             fnvt_sheet sheet_inner nvt temp ${T_init} ${T_init} 0.1
+run             3000
+unfix           fnvt_sheet
+
+# ============================================================
+#  STEP 1: Release ball and fire
+# ============================================================
+unfix           frz_ball
+velocity        w_ball set 0.0 0.0 ${v_impact} units box   # NOTE: without "units box" this is in lattice units (x3.165!)
+
+fix             fnve_ball  w_ball      nve
+fix             fnve_sheet sheet_inner nve
+
+run             0
+variable        KE0     equal $(v_ke_cm)                      # initial projectile KE (eV)
+variable        E_abs   equal ${KE0}-v_ke_cm                  # ballistic energy absorbed (eV)
+variable        E_abs_n equal v_E_abs/count(al_panel)         # per panel atom (eV/atom)
+
+fix             ball_out all ave/time 100 1 100 &
+                v_ball_z v_ball_vms v_ke_cm c_ke_ball v_E_abs &
+                file ball_history.dat
+
+print ">>> Ball released at z = $(v_ball_z:%.1f) Ang, KE0 = ${KE0} eV"
+
+# Gap 15 Ang + panel ~57 Ang + ball diameter 50 Ang + exit margin:
+# ~10-12 ps at 15 Ang/ps; the ball slows in the panel, so allow 20 ps
+run             20000
+
+unfix           fnve_ball
+unfix           fnve_sheet
+
+# ============================================================
+#  Post-Impact Relaxation (panel thermostatted at 300 K)
+# ============================================================
+fix             fnvt_post al_panel nvt temp 300.0 300.0 0.1
+fix             fnve_post w_ball nve
+run             5000
+unfix           fnvt_post
+unfix           fnve_post
+
+# ============================================================
+#  Final Output
+# ============================================================
+print "================================================"
+print " BALLISTIC RESULTS"
+print "================================================"
+print " Initial ball speed  : $(-100.0*v_v_impact:%.0f) m/s"
+print " Residual ball speed : $(v_ball_vms:%.0f) m/s (negative = rebound)"
+print " Ball final z        : $(v_ball_z:%.1f) Ang (panel spans 0 to ${z_top})"
+print " Energy absorbed     : $(v_E_abs:%.2f) eV"
+print " Absorbed per Al atom: $(v_E_abs_n:%.5f) eV/atom"
+print "================================================"
+print " STRESS RESULTS (final state, bar*Ang3)"
+print " Von Mises avg : $(c_avg_vm)"
+print " Von Mises max : $(c_max_vm)"
+print " VM top face   : $(c_vm_top)"
+print " VM TPMS core  : $(c_vm_core)"
+print " VM bottom face: $(c_vm_bot)"
+print " Pressure avg  : $(c_avg_press)"
+print " Pressure min  : $(c_min_press)"
+print " Pressure max  : $(c_max_press)"
+print "================================================"
+
+write_data      impact_final.data
+write_restart   impact_final.restart
+
+print " SIMULATION COMPLETE"
+print " Files: impact_stress.lammpstrj, impact_vonmises.lammpstrj"
+print "        stress_history.dat, ball_history.dat, panel_initial.data"
+print " OVITO: color by Particle Type to see faces (1) vs core (2),"
+print "        or by v_von_mises; Slice at x = ${ball_cx} for the cross-section"
