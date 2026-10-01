@@ -1,6 +1,5 @@
 # Molecular Dynamics Simulation of Ballistic Penetration of a Tungsten Projectile into a TPMS-Core Aluminum Sandwich Panel
 
-![TPMS sandwich panel](tpms_panel_preview.png)
 
 ![LAMMPS](https://img.shields.io/badge/LAMMPS-MD%20Simulation-blue?style=for-the-badge)
 ![Projectile](https://img.shields.io/badge/Tungsten-Projectile-silver?style=for-the-badge)
@@ -16,7 +15,8 @@ A fully atomistic **molecular dynamics simulation of ballistic penetration** of 
 
 The simulation captures projectile deceleration, energy absorption, stress wave transmission from the front face through the lattice core to the back face, core wall buckling and crushing, face sheet petaling, and spallation, using the *EAM/alloy potential (CuAlW.txt)*. Von Mises stress and hydrostatic pressure are computed per atom, and additionally averaged separately for the top face, the TPMS core, and the bottom face.
 
-![Uploading imp.png…]()
+<img width="1600" height="1200" alt="imp" src="https://github.com/user-attachments/assets/b1a89802-2642-4d31-859e-91bb5c735d47" />
+
 
 
 ---
